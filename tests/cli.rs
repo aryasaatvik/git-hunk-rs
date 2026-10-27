@@ -598,6 +598,105 @@ fn unstage_line_range_selects_single_change_on_old_side() {
 }
 
 #[test]
+fn stage_insertion_after_unselected_deletion_keeps_its_position() {
+    let repo = init_repo();
+    write_file(repo.path(), "lines.txt", &numbered_lines(1..=20, &[]));
+    git(repo.path(), &["add", "lines.txt"]);
+    git(repo.path(), &["commit", "-m", "init"]);
+
+    let mut worktree = numbered_lines(1..=20, &[3, 4, 5]);
+    worktree = worktree.replace("line 15\n", "line 15\ninserted\n");
+    write_file(repo.path(), "lines.txt", &worktree);
+
+    let scan = cli_json(repo.path(), &["scan", "--mode", "stage", "--json"]);
+    let snapshot = scan["snapshot_id"].as_str().unwrap();
+    let insertion = nth_change_id(&scan, 1);
+
+    let _stage = cli_json(
+        repo.path(),
+        &[
+            "stage",
+            "--snapshot",
+            snapshot,
+            "--change",
+            &insertion,
+            "--json",
+        ],
+    );
+
+    let expected = numbered_lines(1..=20, &[]).replace("line 15\n", "line 15\ninserted\n");
+    assert_eq!(git_stdout(repo.path(), &["show", ":lines.txt"]), expected);
+}
+
+#[test]
+fn stage_insertion_after_unselected_insertion_keeps_its_position() {
+    let repo = init_repo();
+    write_file(repo.path(), "lines.txt", &numbered_lines(1..=20, &[]));
+    git(repo.path(), &["add", "lines.txt"]);
+    git(repo.path(), &["commit", "-m", "init"]);
+
+    let worktree = numbered_lines(1..=20, &[])
+        .replace("line 2\n", "line 2\nfirst-a\nfirst-b\n")
+        .replace("line 15\n", "line 15\nsecond\n");
+    write_file(repo.path(), "lines.txt", &worktree);
+
+    let scan = cli_json(repo.path(), &["scan", "--mode", "stage", "--json"]);
+    let snapshot = scan["snapshot_id"].as_str().unwrap();
+    let second = nth_change_id(&scan, 1);
+
+    let _stage = cli_json(
+        repo.path(),
+        &[
+            "stage",
+            "--snapshot",
+            snapshot,
+            "--change",
+            &second,
+            "--json",
+        ],
+    );
+
+    let expected = numbered_lines(1..=20, &[]).replace("line 15\n", "line 15\nsecond\n");
+    assert_eq!(git_stdout(repo.path(), &["show", ":lines.txt"]), expected);
+}
+
+#[test]
+fn unstage_deletion_after_unselected_deletion_keeps_its_position() {
+    let repo = init_repo();
+    write_file(repo.path(), "lines.txt", &numbered_lines(1..=20, &[]));
+    git(repo.path(), &["add", "lines.txt"]);
+    git(repo.path(), &["commit", "-m", "init"]);
+
+    write_file(
+        repo.path(),
+        "lines.txt",
+        &numbered_lines(1..=20, &[3, 4, 5, 15]),
+    );
+    git(repo.path(), &["add", "lines.txt"]);
+
+    let scan = cli_json(repo.path(), &["scan", "--mode", "unstage", "--json"]);
+    let snapshot = scan["snapshot_id"].as_str().unwrap();
+    let later_deletion = nth_change_id(&scan, 1);
+
+    let _unstage = cli_json(
+        repo.path(),
+        &[
+            "unstage",
+            "--snapshot",
+            snapshot,
+            "--change",
+            &later_deletion,
+            "--json",
+        ],
+    );
+
+    assert_eq!(
+        git_stdout(repo.path(), &["show", ":lines.txt"]),
+        numbered_lines(1..=20, &[3, 4, 5])
+    );
+}
+
+#[test]
 fn stale_snapshot_is_rejected() {
     let repo = init_repo();
     seed_committed_file(repo.path());
@@ -1420,4 +1519,11 @@ fn git_output(repo: &Path, args: &[&str]) -> Output {
     cmd.env("GIT_COMMITTER_NAME", "Test User");
     cmd.env("GIT_COMMITTER_EMAIL", "test@example.com");
     cmd.output().unwrap()
+}
+
+fn numbered_lines(range: std::ops::RangeInclusive<u32>, skip: &[u32]) -> String {
+    range
+        .filter(|n| !skip.contains(n))
+        .map(|n| format!("line {}\n", n))
+        .collect()
 }
